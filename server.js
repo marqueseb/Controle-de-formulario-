@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
+const session = require('express-session');
 const PDFDocument = require('pdfkit');
 const path = require('path');
 
@@ -13,9 +14,24 @@ mongoose.connect('mongodb://localhost:27017/meuProjeto', { useNewUrlParser: true
 // Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-
-// Servir arquivos estáticos
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Configurar sessão
+app.use(session({
+  secret: 'segredo',
+  resave: false,
+  saveUninitialized: true,
+  cookie: { secure: false } // Use secure: true em produção com HTTPS
+}));
+
+// Middleware de autenticação
+function autenticar(req, res, next) {
+  if (req.session.usuario) {
+    next();
+  } else {
+    res.redirect('/login.html');
+  }
+}
 
 // Definir o esquema do aluno
 const alunoSchema = new mongoose.Schema({
@@ -40,44 +56,63 @@ const alunoSchema = new mongoose.Schema({
   vipClass: String,
   modalidadeEscolhida: String,
   aprovadoAdmin: { type: Boolean, default: false },
-  aprovadoDono: { type: Boolean, default: false }
+  aprovadoDono: { type: Boolean, default: false },
+  dataAprovacao: Date
 });
 
 const Aluno = mongoose.model('Aluno', alunoSchema);
+
+// Rota para login
+app.post('/login', (req, res) => {
+  const { username, password } = req.body;
+  // Verifique as credenciais (substitua por verificação real)
+  if (username === 'admin' && password === 'senha') {
+    req.session.usuario = username;
+    res.redirect('/paginaAdmin.html');
+  } else {
+    res.redirect('/login.html');
+  }
+});
+
+// Rota para logout
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/login.html');
+});
 
 // Rota para receber os dados do formulário
 app.post('/enviarFormulario', async (req, res) => {
   const novoAluno = new Aluno(req.body);
   await novoAluno.save();
-  res.redirect('/paginaAdmin.html');
+  res.status(200).send('Formulário enviado com sucesso!');
 });
 
-// Rota para listar os alunos para o admin
-app.get('/admin/alunos', async (req, res) => {
+// Rota para listar os alunos para o admin (protegida)
+app.get('/admin/alunos', autenticar, async (req, res) => {
   const alunos = await Aluno.find({ aprovadoAdmin: false });
   res.json(alunos);
 });
 
-// Rota para aprovar aluno pelo admin
-app.post('/admin/aprovar/:id', async (req, res) => {
-  await Aluno.findByIdAndUpdate(req.params.id, { aprovadoAdmin: true });
+// Rota para aprovar aluno pelo admin (protegida)
+app.post('/admin/aprovar/:id', autenticar, async (req, res) => {
+  await Aluno.findByIdAndUpdate(req.params.id, { aprovadoAdmin: true, dataAprovacao: new Date() });
   res.redirect('/userDono.html');
 });
 
-// Rota para listar os alunos para o dono
-app.get('/dono/alunos', async (req, res) => {
+// Rota para listar os alunos para o dono (protegida)
+app.get('/dono/alunos', autenticar, async (req, res) => {
   const alunos = await Aluno.find({ aprovadoAdmin: true, aprovadoDono: false });
   res.json(alunos);
 });
 
-// Rota para aprovar aluno pelo dono
-app.post('/dono/aprovar/:id', async (req, res) => {
+// Rota para aprovar aluno pelo dono (protegida)
+app.post('/dono/aprovar/:id', autenticar, async (req, res) => {
   await Aluno.findByIdAndUpdate(req.params.id, { aprovadoDono: true });
   res.redirect('/paginaAdmin.html-1');
 });
 
-// Rota para gerar contrato em PDF
-app.get('/gerarContrato/:id', async (req, res) => {
+// Rota para gerar contrato em PDF (protegida)
+app.get('/gerarContrato/:id', autenticar, async (req, res) => {
   const aluno = await Aluno.findById(req.params.id);
   const doc = new PDFDocument();
 
@@ -90,6 +125,17 @@ app.get('/gerarContrato/:id', async (req, res) => {
   doc.fontSize(12).text(`Responsável: ${aluno.nomeResponsavel}`);
   // Adicione mais informações conforme necessário
   doc.end();
+});
+
+// Rota para contar alunos aprovados hoje
+app.get('/admin/alunosAprovadosHoje', autenticar, async (req, res) => {
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const alunosAprovadosHoje = await Aluno.countDocuments({
+    aprovadoAdmin: true,
+    dataAprovacao: { $gte: hoje }
+  });
+  res.json({ count: alunosAprovadosHoje });
 });
 
 app.listen(port, () => {
